@@ -76,7 +76,7 @@ class AppPatcher:
             return
 
         # 2. Prepare environment
-        wd = self.ctx.target_dir.parent / f"temp_{apk_file.stem}"
+        wd = self.ctx.target_dir.parent / "temp" / f"{apk_file.stem}"
         if wd.exists(): import shutil; shutil.rmtree(wd)
         
         # 3. Decompile APK (using modifier utility)
