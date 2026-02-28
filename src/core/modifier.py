@@ -913,10 +913,11 @@ class SystemModifier:
             product_props = build_props.get("product", {})
             if product_props:
                 # Keep only non-wild_boost props
-                filtered_props = {k: v for k, v in product_props.items() 
-                                if not k.startswith("ro.product.spoofed") 
+                # Filter out device-specific spoofing props, but keep common AI feature props
+                filtered_props = {k: v for k, v in product_props.items()
+                                if not k.startswith("ro.product.spoofed")
                                 and not k.startswith("ro.spoofed")
-                                and not k.startswith("persist.prophook")}
+                                and not (k.startswith("persist.prophook.com.xiaomi.joyose") or k.startswith("persist.prophook.com.miui.powerkeeper"))}
                 if filtered_props:
                     build_props["product"] = filtered_props
                 else:
