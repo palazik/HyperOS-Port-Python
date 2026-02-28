@@ -959,11 +959,16 @@ class SystemModifier:
             try:
                 with open(device_cfg, 'r') as f:
                     device_config = json.load(f)
-                
+
                 # Deep merge logic
                 for key, value in device_config.items():
                     if isinstance(value, dict) and key in config:
-                        config[key].update(value)
+                        # Special handling for build_props to merge product props
+                        if key == "build_props" and "product" in value and "product" in config[key]:
+                            # Merge product props instead of replacing
+                            config[key]["product"].update(value["product"])
+                        else:
+                            config[key].update(value)
                     else:
                         config[key] = value
                 self.logger.info(f"Loaded device features config for {self.ctx.stock_rom_code}.")
