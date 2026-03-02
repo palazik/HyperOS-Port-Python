@@ -81,7 +81,7 @@ class PortingContext:
         
         # >> Java tools
         self.tools.apktool_jar = self.bin_root / "apktool" / "apktool_2.12.1.jar" # Example
-        self.tools.apkeditor_jar = self.bin_root / "apktool" / "APKEditor.jar"
+        self.tools.apkeditor_jar = self.bin_root / "APKEditor.jar"
         
         # Check critical tools
         if not self.tools.magiskboot.exists():
