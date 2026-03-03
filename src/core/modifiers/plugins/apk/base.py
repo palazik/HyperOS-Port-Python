@@ -9,6 +9,7 @@ from typing import Optional, List, Dict, Any, Callable
 import logging
 import shutil
 import sys
+import re
 
 from src.core.modifiers.plugin_system import ModifierPlugin
 from src.utils.smalikit import SmaliKit, SmaliArgs
@@ -46,25 +47,34 @@ class ApkModifierPlugin(ModifierPlugin):
         if not line:
             return
 
+        # Strip ANSI escape codes to match keywords accurately
+        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        clean_line = ansi_escape.sub('', line)
+
         # Noisy APKEditor tags to filter out from permanent logs
         noise_keywords = [
             "Encoding:", "Decoding:", "Building:", "Analyzing:", "Copying:",
             "Scanning:", "Writing:", "Compressing:", "Adding:",
-            "[DECOMPILE]", "[BUILD]", "[ENCODE]"
+            "[DECOMPILE]", "[BUILD]", "[ENCODE]", "[DECODING]", "[ENCODING]"
         ]
         
-        is_noise = any(kw in line for kw in noise_keywords)
+        # Aggressive filtering: if line contains progress-like patterns
+        is_noise = any(kw in clean_line for kw in noise_keywords)
+        
+        # Also filter lines that are obviously just file processing paths
+        if not is_noise:
+            if re.search(r'\[(DECOMPILE|BUILD|ENCODE)\]\s+res/', clean_line):
+                is_noise = True
+            elif re.search(r'\[(DECOMPILE|BUILD|ENCODE)\]\s+smali/', clean_line):
+                is_noise = True
         
         if is_noise and self.quiet:
             # For noise lines, we show a rolling progress on console IF we are not buffered
-            # (If we are buffered, stdout is intercepted, so this only works in serial mode)
-            if not self.logger.propagate: # In PluginManager, we set propagate=False when buffering
-                # We are in a buffered/parallel context, so we just log important stuff
-                # and skip the noise entirely to save buffer space and log volume.
+            if not self.logger.propagate:
                 pass
             else:
                 # In serial mode, we can do the \r trick for better UI
-                sys.stdout.write(f"\r  [BUILD] {line[:80].ljust(85)}")
+                sys.stdout.write(f"\r  [BUILD] {clean_line[:80].ljust(85)}")
                 sys.stdout.flush()
                 self._last_line_was_progress = True
         else:
@@ -254,7 +264,7 @@ class ApkModifierPlugin(ModifierPlugin):
         args = SmaliArgs(**kwargs)
         # Use file_path if provided, otherwise use the whole work_dir
         target_path = args.file_path if args.file_path else str(work_dir)
-        patcher = SmaliKit(args)
+        patcher = SmaliKit(args, logger=self.logger)
         patcher.walk_and_patch(target_path)
     
     def smali_seek_and_replace(self, work_dir: Path, keyword: str, return_value: str, return_type: str = "Z"):

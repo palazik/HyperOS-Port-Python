@@ -20,4 +20,5 @@ class BaseModule:
 
     # Encapsulate common SmaliKit calls to simplify subclass code
     def smali_patch(self, work_dir, **kwargs):
-        self.run_smali(path=str(work_dir), **kwargs)
+        # Pass the module's logger so SmaliKit output is captured
+        self.run_smali(path=str(work_dir), logger=self.logger, **kwargs)
