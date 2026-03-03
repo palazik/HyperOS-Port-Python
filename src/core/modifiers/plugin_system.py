@@ -154,10 +154,28 @@ class BufferedLogHandler(logging.Handler):
         """Flush buffered content to the actual logger output."""
         content = self.buffer.getvalue()
         if content:
-            # We use print here because we want to avoid further formatting 
-            # and ensure it hits the console directly if that's where logs go.
-            # In a production environment, you might want to log this as a single block.
-            print(content, end='', flush=True)
+            # We use target_logger.info with a custom flag or extra to avoid 
+            # the standard formatter if we already formatted it, 
+            # but usually it's better to just log it so it hits all handlers (File, Stream).
+            
+            # To avoid double formatting in the console but ensure it hits the file:
+            # We can strip the formatting we added in emit() and let the target_logger handle it,
+            # OR we can just write directly to the handlers of the target_logger.
+            
+            for handler in self.target_logger.handlers:
+                # If it's a StreamHandler (Console), we print the already formatted block
+                if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+                    handler.stream.write(content)
+                    handler.flush()
+                # If it's a FileHandler, we also write it
+                elif isinstance(handler, logging.FileHandler):
+                    handler.stream.write(content)
+                    handler.flush()
+                else:
+                    # For other handlers, we might need to emit a record, 
+                    # but for this specific tool, these two are the main ones.
+                    pass
+            
             self.buffer.truncate(0)
             self.buffer.seek(0)
 

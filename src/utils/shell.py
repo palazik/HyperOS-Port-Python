@@ -62,7 +62,8 @@ class ShellRunner:
 
     def run(self, cmd: Union[str, List[str]], cwd: Optional[Path] = None, 
             check: bool = True, capture_output: bool = False, 
-            env: Optional[dict] = None, logger: Optional[logging.Logger] = None) -> subprocess.CompletedProcess:
+            env: Optional[dict] = None, logger: Optional[logging.Logger] = None,
+            on_line: Optional[Callable[[str], None]] = None) -> subprocess.CompletedProcess:
         """
         Core method to execute commands
         :param cmd: List of commands (recommended) or string. e.g. ["lpunpack", "super.img"]
@@ -71,6 +72,7 @@ class ShellRunner:
         :param capture_output: Whether to capture stdout/stderr (do not print directly to console)
         :param env: Environment variables dict (will merge with system env)
         :param logger: Optional logger to stream output to (forces capture_output=True)
+        :param on_line: Optional callback function called for each line of output
         """
         
         if isinstance(cmd, list):
@@ -88,11 +90,11 @@ class ShellRunner:
         cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
         self.logger.debug(f"Running: {cmd_str}")
 
-        # If a logger is provided, we must capture output to stream it
-        should_capture = capture_output or (logger is not None)
+        # If a logger or on_line is provided, we must capture output
+        should_capture = capture_output or (logger is not None) or (on_line is not None)
 
         try:
-            if logger:
+            if logger or on_line:
                 # Streaming mode
                 process = subprocess.Popen(
                     cmd,
@@ -107,7 +109,12 @@ class ShellRunner:
                 output_lines = []
                 if process.stdout:
                     for line in process.stdout:
-                        logger.info(f"  [SHELL] {line.strip()}")
+                        clean_line = line.strip()
+                        if on_line:
+                            on_line(clean_line)
+                        
+                        if logger and clean_line:
+                            logger.info(f"  [SHELL] {clean_line}")
                         output_lines.append(line)
                 
                 returncode = process.wait()

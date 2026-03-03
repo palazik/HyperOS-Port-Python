@@ -5,9 +5,10 @@ Uses PortingContext's built-in tools and shell runner.
 """
 from abc import abstractmethod
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 import logging
 import shutil
+import sys
 
 from src.core.modifiers.plugin_system import ModifierPlugin
 from src.utils.smalikit import SmaliKit, SmaliArgs
@@ -37,6 +38,42 @@ class ApkModifierPlugin(ModifierPlugin):
         self.xml = XmlUtils()
         self._work_dir: Optional[Path] = None
         self._apk_path: Optional[Path] = None
+        self.quiet = True  # Filter out noisy APKEditor logs
+        self._last_line_was_progress = False
+
+    def _log_filter(self, line: str):
+        """Filter noisy logs and provide progress feedback."""
+        if not line:
+            return
+
+        # Noisy APKEditor tags to filter out from permanent logs
+        noise_keywords = [
+            "Encoding:", "Decoding:", "Building:", "Analyzing:", "Copying:",
+            "Scanning:", "Writing:", "Compressing:", "Adding:"
+        ]
+        
+        is_noise = any(kw in line for kw in noise_keywords)
+        
+        if is_noise and self.quiet:
+            # For noise lines, we show a rolling progress on console IF we are not buffered
+            # (If we are buffered, stdout is intercepted, so this only works in serial mode)
+            if not self.logger.propagate: # In PluginManager, we set propagate=False when buffering
+                # We are in a buffered/parallel context, so we just log important stuff
+                # and skip the noise entirely to save buffer space and log volume.
+                pass
+            else:
+                # In serial mode, we can do the \r trick for better UI
+                sys.stdout.write(f"\r  [BUILD] {line[:80].ljust(85)}")
+                sys.stdout.flush()
+                self._last_line_was_progress = True
+        else:
+            # Non-noise lines (errors, warnings, important steps)
+            if self._last_line_was_progress:
+                print() # New line after progress
+                self._last_line_was_progress = False
+            
+            # Log to the actual logger (this will go to both console and file)
+            self.logger.info(f"  [SHELL] {line}")
     
     def check_prerequisites(self) -> bool:
         """Check if target APK exists using cached lookup."""
@@ -162,9 +199,13 @@ class ApkModifierPlugin(ModifierPlugin):
             self.ctx.shell.run_java_jar(
                 apkeditor_jar,
                 ["d", "-f", "-i", str(apk_path), "-o", str(work_dir)],
-                logger=self.logger
+                on_line=self._log_filter
             )
             
+            if self._last_line_was_progress:
+                print() # Finalize progress line
+                self._last_line_was_progress = False
+
             self.logger.debug(f"Decompiled {apk_path.name} to {work_dir}")
             return work_dir
         except Exception as e:
@@ -187,9 +228,13 @@ class ApkModifierPlugin(ModifierPlugin):
             self.ctx.shell.run_java_jar(
                 apkeditor_jar,
                 ["b", "-f", "-i", str(work_dir), "-o", str(temp_apk)],
-                logger=self.logger
+                on_line=self._log_filter
             )
             
+            if self._last_line_was_progress:
+                print() # Finalize progress line
+                self._last_line_was_progress = False
+
             # Replace original
             shutil.copy2(temp_apk, original_apk)
             self.logger.debug(f"Recompiled APK saved to {original_apk}")
