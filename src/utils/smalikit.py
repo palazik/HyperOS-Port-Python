@@ -3,8 +3,10 @@ import os
 import sys
 import re
 import argparse
+import logging
 
 class SmaliArgs:
+    # ... (existing SmaliArgs class unchanged)
     def __init__(self, **kwargs):
         # Set default values for all arguments (corresponds to dest in argparse)
         self.path = None
@@ -36,10 +38,11 @@ class Colors:
     BOLD = '\033[1m'
 
 class SmaliKit:
-    def __init__(self, args):
+    def __init__(self, args, logger=None):
         self.args = args
         self.target_method = args.method
         self.seek_keyword = args.seek_keyword
+        self.logger = logger or logging.getLogger("SmaliKit")
         
         # 1. If -m is specified, method name match must be satisfied first
         if self.target_method:
@@ -56,7 +59,7 @@ class SmaliKit:
             method_name_pattern = r".*?" 
             
         else:
-            print(f"{Colors.FAIL}[ERROR] You must provide either -m (Method Name) or -seek (Keyword search){Colors.ENDC}")
+            self.logger.error("You must provide either -m (Method Name) or -seek (Keyword search)")
             sys.exit(1)
 
         # Compile regex
@@ -70,7 +73,9 @@ class SmaliKit:
 
 
     def log(self, message, color=Colors.ENDC):
-        print(f"{color}{message}{Colors.ENDC}")
+        # Log to the logger, stripping color codes if it's going to a file (optional)
+        # But here we log the colored version to terminal (via logger)
+        self.logger.info(f"{color}{message}{Colors.ENDC}")
 
     def apply_modifications(self, original_body):
         """

@@ -54,7 +54,7 @@ class FrameworkModifier(BaseModifier):
 
     def _run_smalikit(self, **kwargs):
         args = SmaliArgs(**kwargs)
-        patcher = SmaliKit(args)
+        patcher = SmaliKit(args, logger=self.logger)
         target = args.file_path if args.file_path else args.path
         if target:
             patcher.walk_and_patch(target)
