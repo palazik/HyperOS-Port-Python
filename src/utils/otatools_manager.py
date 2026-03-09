@@ -16,8 +16,17 @@ class OtaToolsManager:
         self.logger = logging.getLogger("OtaToolsManager")
 
     def check_otatools_exists(self) -> bool:
-        """Check if the otatools directory exists with all required components."""
-        return self.tools_dir.exists() and any(self.tools_dir.iterdir())
+        """Check if the otatools directory exists with basic components."""
+        if not self.tools_dir.exists():
+            return False
+        
+        # Check for some common directories that should be in otatools
+        required_dirs = ["bin", "lib64"]
+        for d in required_dirs:
+            if not (self.tools_dir / d).exists():
+                return False
+                
+        return True
 
     def download_otatools(self, url: Optional[str] = None) -> bool:
         """
@@ -77,16 +86,21 @@ class OtaToolsManager:
 
     def ensure_otatools(self) -> bool:
         """
-        Check if otatools exists; if not, download it from the default URL.
+        Check if otatools exists and is complete; if not, download it.
 
         Returns:
             True if otatools is available or successfully downloaded, False otherwise
         """
         if self.check_otatools_exists():
-            self.logger.info(f"otatools already exists at {self.tools_dir.resolve()}")
+            self.logger.info(f"otatools already exists and is complete at {self.tools_dir.resolve()}")
             return True
 
-        self.logger.info(
-            f"otatools directory does not exist. Attempting to download from {self.DEFAULT_URL}"
-        )
+        if self.tools_dir.exists():
+            self.logger.warning(
+                f"otatools directory exists but is incomplete or missing critical binaries. Re-downloading from {self.DEFAULT_URL}"
+            )
+        else:
+            self.logger.info(
+                f"otatools directory does not exist. Attempting to download from {self.DEFAULT_URL}"
+            )
         return self.download_otatools()
