@@ -39,7 +39,7 @@ A powerful, automated Python-based tool for porting HyperOS ROMs across Xiaomi/R
 - **Base (Stock):**
   - Xiaomi 13 (HyperOS 2.0/3.0)
   - Xiaomi 12S (HyperOS 3.0 / A15)
-  - Xiaomi 14 Ultra (HyperOS 3.0 / A16 / KMI 6.12)
+  - Xiaomi 17 (HyperOS 3.0 / A16 / KMI 6.12)
 - **Port Sources:**
   - Xiaomi 14 / 15 / 17
   - Redmi K90 / K90 Pro

@@ -38,7 +38,7 @@
 - **底包 (Stock):**
   - 小米 13 (HyperOS 2.0/3.0)
   - 小米 12S (HyperOS 3.0 / A15)
-  - 小米 14 Ultra (HyperOS 3.0 / A16 / KMI 6.12)
+  - 小米 17 (HyperOS 3.0 / A16 / KMI 6.12)
 - **移植来源:**
   - 小米 14 / 15 / 17
   - 红米 K90 / K90 Pro
