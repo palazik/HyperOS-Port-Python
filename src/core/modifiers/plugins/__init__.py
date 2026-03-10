@@ -222,57 +222,54 @@ class EULocalizationPlugin(ModifierPlugin):
     
     def _replace_eu_apps(self, bundle_path: Path):
         """Replace existing apps with EU versions."""
-        from src.utils.shell import ShellRunner
-        shell = ShellRunner()
+        self.logger.info("Scanning EU bundle for APKs to replace...")
         
+        # 1. Identify all unique packages in the bundle
+        bundle_packages = {} # pkg_name -> list of paths
         for apk_file in bundle_path.rglob("*.apk"):
-            pkg_name = self._get_package_name(apk_file, shell)
-            if not pkg_name:
-                continue
+            pkg_name = self.ctx.syncer._get_apk_package_name(apk_file)
+            if pkg_name:
+                if pkg_name not in bundle_packages:
+                    bundle_packages[pkg_name] = []
+                bundle_packages[pkg_name].append(apk_file)
+
+        self.logger.info(f"Found {len(bundle_packages)} unique package(s) in EU Bundle.")
+
+        # 2. For each unique package, find and remove original app in target ROM
+        for pkg_name in bundle_packages:
+            # Search for matching app in target ROM (global search)
+            # Ensure cache is built by calling find_apks_by_package
+            target_apks = self.ctx.syncer.find_apks_by_package(pkg_name, self.ctx.target_dir)
             
-            # Search for matching app in target ROM
-            target_roots = [
-                self.ctx.target_dir / "system/app",
-                self.ctx.target_dir / "system/priv-app",
-                self.ctx.target_dir / "product/app",
-                self.ctx.target_dir / "product/priv-app",
-                self.ctx.target_dir / "system_ext/app",
-                self.ctx.target_dir / "system_ext/priv-app"
-            ]
-            
-            found = False
-            for root in target_roots:
-                if not root.exists():
-                    continue
+            if target_apks:
+                self.logger.info(f"Replacing EU App: {pkg_name} ({len(target_apks)} instance(s) found)")
                 
-                for target_apk in root.rglob("*.apk"):
-                    target_pkg = self._get_package_name(target_apk, shell)
-                    if target_pkg == pkg_name:
-                        app_dir = target_apk.parent
-                        self.logger.info(f"Replacing EU App: {pkg_name}")
-                        self.logger.info(f"  - Removing: {app_dir}")
-                        shutil.rmtree(app_dir)
-                        found = True
-                        break
-                
-                if found:
-                    break
-            
-            if not found:
-                self.logger.info(f"Adding new EU App: {pkg_name}")
+                for target_apk in target_apks:
+                    if not target_apk.exists():
+                        continue
+                        
+                    app_dir = target_apk.parent
+                    self.logger.info(f"  - Found at: {target_apk.relative_to(self.ctx.target_dir)}")
+                    
+                    # Safety check: avoid deleting root partition dirs (app, priv-app, etc.)
+                    protected_dirs = {
+                        "app", "priv-app", "system", "product", "system_ext", "vendor",
+                        "overlay", "framework", "mi_ext", "odm", "oem"
+                    }
+                    
+                    if app_dir.name not in protected_dirs:
+                        self.logger.debug(f"  - Removing directory: {app_dir}")
+                        try:
+                            shutil.rmtree(app_dir)
+                        except Exception as e:
+                            self.logger.error(f"  - Failed to remove {app_dir}: {e}")
+                    else:
+                        self.logger.debug(f"  - Removing single file (protected parent): {target_apk}")
+                        target_apk.unlink()
+            else:
+                self.logger.debug(f"Adding new EU App: {pkg_name} (no match in target)")
     
-    def _get_package_name(self, apk_path: Path, shell) -> Optional[str]:
-        """Extract package name from APK."""
-        try:
-            cmd = [str(self.ctx.tools.aapt2), "dump", "packagename", str(apk_path)]
-            result = shell.run(cmd, capture_output=True, check=False)
-            if result.returncode == 0:
-                output = result.stdout.strip()
-                if "package: name=" in output:
-                    return output.split("'")[1]
-        except Exception:
-            pass
-        return None
+    # Remove the redundant _get_package_name method as we now use the one in syncer
 
 
 @ModifierRegistry.register

@@ -4,6 +4,7 @@ import subprocess
 import logging
 import threading
 from pathlib import Path
+from typing import List, Dict, Optional, Union, Any
 
 class ROMSyncEngine:
     def __init__(self,context, logger: logging.Logger):
@@ -254,14 +255,27 @@ class ROMSyncEngine:
         """
         Use aapt2 to parse APK package name (extremely fast)
         """
-        if not apk_path.exists() or not self.ctx.tools.aapt2:
+        # Safely get aapt2 path from context
+        aapt2 = getattr(getattr(self.ctx, "tools", None), "aapt2", None)
+        
+        if not apk_path.exists() or not aapt2:
             return None
             
-        cmd = [str(self.ctx.tools.aapt2), "dump", "packagename", str(apk_path)]
+        cmd = [str(aapt2), "dump", "packagename", str(apk_path)]
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            # aapt2 output is just the package name text, e.g.: com.android.settings
-            return result.stdout.strip()
+            output = result.stdout.strip()
+            
+            # Handle different aapt2 output formats
+            if "package: name=" in output:
+                # Format: package: name='com.android.settings' ...
+                try:
+                    return output.split("'")[1]
+                except IndexError:
+                    return None
+            
+            # Standard raw output or fallback
+            return output
         except subprocess.CalledProcessError as e:
             self.logger.warning(f"Failed to parse package name for {apk_path.name}: {e.stderr.strip()}")
             return None
@@ -315,6 +329,27 @@ class ROMSyncEngine:
         matches = self._target_rom_cache.get(apk_name.lower(), [])
         return matches[0] if matches else None
     
+    def find_apks_by_package(self, package_name: str, target_dir: Path = None) -> List[Path]:
+        """Find all APKs by package name.
+        
+        Args:
+            package_name: Full package name (e.g., "com.android.settings")
+            target_dir: Target directory to search (defaults to context's target_dir)
+            
+        Returns:
+            List of Paths to matching APKs
+        """
+        # Ensure package cache is built
+        if target_dir and not self._target_package_cache:
+            self._build_package_cache(target_dir)
+        elif not self._target_package_cache:
+             # Fallback to context target_dir if available
+             if hasattr(self.ctx, "target_dir"):
+                 self._build_package_cache(self.ctx.target_dir)
+        
+        # Find in package cache
+        return self._target_package_cache.get(package_name, [])
+
     def find_apk_by_package(self, package_name: str, target_dir: Path = None) -> Path | None:
         """Find APK by package name.
         

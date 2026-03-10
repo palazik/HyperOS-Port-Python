@@ -19,6 +19,28 @@ def setup_logging():
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
 
+def get_aapt2_path(project_root: Path) -> Path:
+    """Auto-detect system environment and return aapt2 path."""
+    import platform
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    
+    if machine in ["amd64", "x86_64"]: arch = "x86_64"
+    elif machine in ["aarch64", "arm64"]: arch = "arm64"
+    else: arch = "x86_64"
+
+    plat_dir = "linux" if system == "linux" else "windows" if system == "windows" else "macos"
+    exe_ext = ".exe" if system == "windows" else ""
+    
+    bin_dir = project_root / "bin" / plat_dir / arch
+    aapt2 = bin_dir / f"aapt2{exe_ext}"
+    
+    if not aapt2.exists():
+        # Try fallback to generic platform dir
+        aapt2 = project_root / "bin" / plat_dir / f"aapt2{exe_ext}"
+        
+    return aapt2
+
 def main():
     setup_logging()
     logger = logging.getLogger("BundleGen")
@@ -49,6 +71,12 @@ def main():
         logger.info(f"Extracting Source ROM: {args.rom}")
         rom = RomPackage(args.rom, work_dir / "rom_extract", label="Source")
         
+        # Add minimal tools attribute to rom for syncer compatibility
+        from types import SimpleNamespace
+        rom.tools = SimpleNamespace()
+        rom.tools.aapt2 = get_aapt2_path(project_root)
+        logger.info(f"Using aapt2 tool: {rom.tools.aapt2}")
+        
         # Determine which partitions we need to mount/extract based on config
         # Simply extract common system partitions to be safe
         partitions_to_extract = ["system", "product", "system_ext", "mi_ext"]
@@ -60,48 +88,83 @@ def main():
         
         extracted_root = rom.extracted_dir
         
+        # Build global package index for the source ROM
+        logger.info("Building package index for Source ROM...")
+        from src.utils.sync_engine import ROMSyncEngine
+        syncer = ROMSyncEngine(rom, logger)
+        syncer._build_package_cache(extracted_root)
+        
         count = 0
-        for app_path_str in apps_list:
-            # app_path_str e.g. "product/app/MiuiCamera"
-            # We need to find this in the extracted ROM
+        for item in apps_list:
+            # Handle both string (legacy) and dict (extended) config
+            if isinstance(item, str):
+                app_path_str = item
+                pkg_name = None
+            else:
+                app_path_str = item.get("path")
+                pkg_name = item.get("package")
+
+            found_srcs = []
+
+            # 1. Try package-based lookup first if provided
+            if pkg_name:
+                matches = syncer.find_apks_by_package(pkg_name, extracted_root)
+                if matches:
+                    logger.info(f"Found package {pkg_name} at {len(matches)} location(s)")
+                    for apk_path in matches:
+                        # For split APKs or apps in folders, we want the parent directory
+                        # unless it's a root partition directory
+                        parent = apk_path.parent
+                        protected_dirs = {"app", "priv-app", "data-app", "overlay", "framework"}
+                        if parent.name not in protected_dirs:
+                            found_srcs.append(parent)
+                        else:
+                            found_srcs.append(apk_path)
             
-            # Logic: Split path into partition and relative path
-            # e.g. "system/app/Foo" -> part="system", rest="app/Foo"
-            parts = Path(app_path_str).parts
-            if not parts: continue
+            # 2. Try path-based lookup if no package found or package not specified
+            if not found_srcs and app_path_str:
+                parts = Path(app_path_str).parts
+                if parts:
+                    partition = parts[0]
+                    relative_path = Path(*parts[1:])
+                    
+                    candidates = [
+                        extracted_root / app_path_str,
+                        extracted_root / partition / partition / relative_path
+                    ]
+                    
+                    for candidate in candidates:
+                        if candidate.exists():
+                            found_srcs.append(candidate)
+                            break
             
-            partition = parts[0] # system, product, etc.
-            relative_path = Path(*parts[1:])
-            
-            # Search candidate paths
-            candidates = [
-                extracted_root / app_path_str,                         # Standard: extracted/system/app/Foo
-                extracted_root / partition / partition / relative_path # SAR: extracted/system/system/app/Foo
-            ]
-            
-            found_src = None
-            for candidate in candidates:
-                if candidate.exists():
-                    found_src = candidate
-                    break
-            
-            if not found_src:
-                logger.warning(f"App not found: {app_path_str}")
+            if not found_srcs:
+                logger.warning(f"App not found: {item}")
                 continue
                 
-            # 2. Copy to bundle root, preserving structure
-            # Always map to the simple structure (bundle_root/system/app/Foo)
-            dest_path = bundle_root / app_path_str
-            dest_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            if found_src.is_dir():
-                if dest_path.exists(): shutil.rmtree(dest_path)
-                shutil.copytree(found_src, dest_path)
-            else:
-                shutil.copy2(found_src, dest_path)
-            
-            logger.info(f"Collected: {app_path_str}")
-            count += 1
+            # 3. Copy found sources to bundle root
+            for src in found_srcs:
+                # Determine destination path
+                # If we found it by package, we need to map it back to a standard path
+                rel_to_extracted = src.relative_to(extracted_root)
+                
+                # Handle SAR (System-as-Root) double-folder structure if present
+                # e.g. system/system/app/Foo -> system/app/Foo
+                path_parts = list(rel_to_extracted.parts)
+                if len(path_parts) > 1 and path_parts[0] == path_parts[1]:
+                    path_parts.pop(0)
+                
+                dest_path = bundle_root / Path(*path_parts)
+                dest_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                if src.is_dir():
+                    if dest_path.exists(): shutil.rmtree(dest_path)
+                    shutil.copytree(src, dest_path, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(src, dest_path)
+                
+                logger.info(f"Collected: {Path(*path_parts)}")
+                count += 1
 
         if count == 0:
             logger.error("No apps collected! Check your config and ROM.")
