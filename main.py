@@ -16,6 +16,7 @@ from src.core.context import PortingContext
 from src.core.config_loader import load_device_config
 from src.utils.downloader import RomDownloader
 from src.utils.otatools_manager import OtaToolsManager
+from src.core.cache_manager import PortRomCacheManager
 
 
 # Set up logging
@@ -35,20 +36,18 @@ logger = logging.getLogger("main")
 
 def parse_args():
     parser = argparse.ArgumentParser(description="HyperOS Porting Tool")
+    parser.add_argument("--stock", required=True, help="Path to Stock ROM (zip/payload/dir)")
     parser.add_argument(
-        "--stock", required=True, help="Path to Stock ROM (zip/payload/dir)"
-    )
-    parser.add_argument(
-        "--port", required=False, help="Path to Port ROM (zip/payload/dir). If omitted, runs in Official Modification mode."
+        "--port",
+        required=False,
+        help="Path to Port ROM (zip/payload/dir). If omitted, runs in Official Modification mode.",
     )
     parser.add_argument(
         "--ksu",
         action="store_true",
         help="Inject KernelSU into init_boot/boot. Default: from config or False",
     )
-    parser.add_argument(
-        "--work-dir", default="build", help="Working directory (default: build)"
-    )
+    parser.add_argument("--work-dir", default="build", help="Working directory (default: build)")
     parser.add_argument(
         "--clean", action="store_true", help="Clean working directory before starting"
     )
@@ -70,6 +69,22 @@ def parse_args():
         "--phases",
         nargs="+",
         help="Specific phases to run: system, apk, framework, firmware, repack (default: all)",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        default=".cache/portroms",
+        help="Cache directory for Port ROM reuse (default: .cache/portroms)",
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable cache, force full extraction and modification",
+    )
+    parser.add_argument(
+        "--clear-cache", action="store_true", help="Clear all cache before starting"
+    )
+    parser.add_argument(
+        "--show-cache-stats", action="store_true", help="Show cache statistics and exit"
     )
 
     args = parser.parse_args()
@@ -110,6 +125,22 @@ def main():
         logger.info("No Port ROM provided. Entering Official Modification mode.")
         args.port = args.stock
 
+    # Initialize cache manager
+    cache_manager = None
+    if not args.no_cache and not is_official_modify:
+        cache_manager = PortRomCacheManager(args.cache_dir)
+
+        if args.show_cache_stats:
+            import json
+
+            stats = cache_manager.get_cache_info()
+            print(json.dumps(stats, indent=2))
+            sys.exit(0)
+
+        if args.clear_cache:
+            cache_manager.clear_all()
+            logger.info("Cache cleared")
+
     logger.info("=" * 70)
     logger.info("HyperOS Porting Tool v2.0")
     logger.info("=" * 70)
@@ -122,6 +153,10 @@ def main():
     logger.info(f"Work Dir:  {args.work_dir}")
     if args.phases:
         logger.info(f"Phases:    {', '.join(args.phases)}")
+    if cache_manager:
+        logger.info(f"Cache:     Enabled ({args.cache_dir})")
+    else:
+        logger.info("Cache:     Disabled")
     logger.info("=" * 70)
 
     # Check and download otatools if needed
@@ -168,7 +203,7 @@ def main():
             # In official modify mode, port is the same as stock
             port = stock
         else:
-            port = RomPackage(args.port, port_work_dir, label="Port")
+            port = RomPackage(args.port, port_work_dir, label="Port", cache_manager=cache_manager)
             port_partitions = ["system", "product", "system_ext", "mi_ext"]
             port.extract_images(port_partitions)
 
@@ -198,17 +233,11 @@ def main():
             f"KernelSU: {'enabled' if enable_ksu else 'disabled'} (from {'CLI' if args.ksu else 'config'})"
         )
 
-        pack_type = args.pack_type or device_config.get("pack", {}).get(
-            "type", "payload"
-        )
+        pack_type = args.pack_type or device_config.get("pack", {}).get("type", "payload")
         fs_type = args.fs_type or device_config.get("pack", {}).get("fs_type", "erofs")
 
-        logger.info(
-            f"Pack Type: {pack_type} (from {'CLI' if args.pack_type else 'config'})"
-        )
-        logger.info(
-            f"Filesystem: {fs_type} (from {'CLI' if args.fs_type else 'config'})"
-        )
+        logger.info(f"Pack Type: {pack_type} (from {'CLI' if args.pack_type else 'config'})")
+        logger.info(f"Filesystem: {fs_type} (from {'CLI' if args.fs_type else 'config'})")
         logger.info(f"Detected Stock ROM Type: {stock.rom_type}")
 
         # Export properties for debug analysis
@@ -225,15 +254,11 @@ def main():
         logger.info(">>> Phase 3: Modifications")
 
         # Use UnifiedModifier for system + APK modifications
-        phases_to_run = (
-            args.phases if args.phases else ["system", "apk", "framework", "firmware"]
-        )
+        phases_to_run = args.phases if args.phases else ["system", "apk", "framework", "firmware"]
 
         if "system" in phases_to_run or "apk" in phases_to_run:
             logger.info("Running Unified Modifier (System + APK)...")
-            unified_modifier = UnifiedModifier(
-                ctx, enable_apk_mods=("apk" in phases_to_run)
-            )
+            unified_modifier = UnifiedModifier(ctx, enable_apk_mods=("apk" in phases_to_run))
 
             # Map phases to unified modifier format
             unified_phases = []
@@ -268,9 +293,7 @@ def main():
             packer = Repacker(ctx)
             packer.pack_all(pack_type=fs_type.upper(), is_rw=(fs_type == "ext4"))
 
-            logger.info(
-                f"All images packed successfully! Check {target_work_dir}/*.img"
-            )
+            logger.info(f"All images packed successfully! Check {target_work_dir}/*.img")
 
             # Execute Packing Strategy
             if pack_type == "super":
@@ -282,6 +305,18 @@ def main():
 
         logger.info("=" * 70)
         logger.info("Porting completed successfully!")
+
+        # Show cache statistics
+        if cache_manager:
+            import json
+
+            stats = cache_manager.get_cache_info()
+            if stats["cached_roms"]:
+                total_mb = stats.get("total_size_mb", 0)
+                logger.info(
+                    f"Cache: {len(stats['cached_roms'])} ROMs cached, {total_mb:.1f} MB total"
+                )
+
         logger.info("=" * 70)
 
         sys.exit(0)
@@ -293,6 +328,7 @@ def main():
     except Exception as e:
         logger.error(f"An error occurred during porting: {e}", exc_info=True)
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
