@@ -1,19 +1,23 @@
 """
-Port ROM Cache Manager - 多机型移植缓存复用机制
+Port ROM Cache Manager - Hierarchical caching for ROM porting
 
 This module provides a hierarchical caching system for Port ROM processing,
 enabling reuse of extracted partitions and APK modifications across multiple
 device porting operations.
 
 Features:
-    - Partition-level caching (Level 1)
-    - APK modification caching (Level 2)
+    - Partition-level caching (Level 1) - DISABLED BY DEFAULT
+    - APK modification caching (Level 2) - ALWAYS ENABLED
     - File lock support for concurrent access
     - Cache metadata management with versioning
     - Automatic cache validation and invalidation
 
 Usage:
+    # APK caching only (default)
     cache = PortRomCacheManager(".cache/portroms")
+
+    # Enable partition caching for multi-device reuse
+    cache = PortRomCacheManager(".cache/portroms", cache_partitions=True)
 
     # Store partition
     cache.store_partition(rom_path, "system", extracted_dir)
@@ -47,7 +51,7 @@ DEFAULT_CACHE_ROOT = ".cache/portroms"
 
 @dataclass
 class CacheMetadata:
-    """缓存元数据结构"""
+    """Cache metadata structure for tracking cached partitions."""
 
     version: str = CACHE_VERSION
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -58,8 +62,8 @@ class CacheMetadata:
     total_size: int = 0
     modifier_version: str = "1.0"
     source_size: int = 0
-    rom_type: str = ""  # ROM类型 (PAYLOAD, FASTBOOT, etc.)
-    extracted_at: str = ""  # 提取时间戳
+    rom_type: str = ""  # ROM type (PAYLOAD, FASTBOOT, etc.)
+    extracted_at: str = ""  # Extraction timestamp
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -71,9 +75,9 @@ class CacheMetadata:
 
 class FileLock:
     """
-    跨平台文件锁实现
+    Cross-platform file lock implementation.
 
-    支持Unix (fcntl) 和 Windows (portalocker备选)
+    Supports Unix (fcntl) with fallback for Windows.
     """
 
     def __init__(self, lock_file: Union[str, Path], timeout: float = 30.0):
@@ -91,7 +95,7 @@ class FileLock:
         return False
 
     def acquire(self) -> bool:
-        """获取文件锁"""
+        """Acquire file lock."""
         import fcntl
 
         self.lock_file.parent.mkdir(parents=True, exist_ok=True)
@@ -115,7 +119,7 @@ class FileLock:
                 time.sleep(0.1)
 
     def release(self):
-        """释放文件锁"""
+        """Release file lock."""
         import fcntl
 
         if self._lock_fd:
@@ -131,16 +135,26 @@ class FileLock:
 
 class PortRomCacheManager:
     """
-    Port ROM缓存管理器
+    Port ROM Cache Manager
 
-    管理Port ROM的分区和APK修改缓存，支持多设备复用。
+    Manages partition and APK modification caches for Port ROM processing.
+    Supports reuse across multiple device porting operations.
+
+    Cache Levels:
+        - Level 1 (Partition): Disabled by default - high disk usage
+        - Level 2 (APK): Always enabled - minimal disk usage
 
     Attributes:
-        cache_root: 缓存根目录路径
-        logger: 日志记录器
+        cache_root: Cache root directory path
+        cache_partitions: Whether partition-level caching is enabled
+        logger: Logger instance
 
     Example:
+        >>> # APK caching only (default)
         >>> cache = PortRomCacheManager(".cache/portroms")
+        >>>
+        >>> # Enable partition caching for multi-device reuse
+        >>> cache = PortRomCacheManager(".cache/portroms", cache_partitions=True)
         >>> cache.store_partition(rom_path, "system", extracted_dir)
         >>> cache.restore_partition(rom_path, "system", target_dir)
     """
@@ -148,30 +162,37 @@ class PortRomCacheManager:
     def __init__(
         self,
         cache_root: Union[str, Path] = DEFAULT_CACHE_ROOT,
-        cache_partitions: bool = True,
+        cache_partitions: bool = False,
     ):
         """
-        初始化缓存管理器
+        Initialize cache manager.
 
         Args:
-            cache_root: 缓存根目录路径，默认为".cache/portroms"
-            cache_partitions: 是否启用分区级缓存，默认为True
+            cache_root: Cache root directory path, default ".cache/portroms"
+            cache_partitions: Enable partition-level caching, default False
+
+        Note:
+            Partition-level caching consumes significant disk space.
+            Enable only when reusing same Port ROM across multiple devices.
+            APK modification caching is always enabled regardless of this setting.
         """
         self.cache_root = Path(cache_root).resolve()
         self.cache_root.mkdir(parents=True, exist_ok=True)
         self.logger = logging.getLogger("PortRomCacheManager")
 
-        # 分区级缓存开关
+        # Partition-level caching switch (disabled by default)
         self.cache_partitions = cache_partitions
-        if not cache_partitions:
-            self.logger.info("Partition-level caching is disabled")
+        if cache_partitions:
+            self.logger.info("Partition-level caching enabled")
+        else:
+            self.logger.info("Partition-level caching disabled (APK caching still active)")
 
-        # 确保元数据目录存在
+        # Ensure metadata directory exists
         self._metadata_file = self.cache_root / "metadata.json"
         self._load_global_metadata()
 
     def _load_global_metadata(self):
-        """加载全局缓存元数据"""
+        """Load global cache metadata."""
         if self._metadata_file.exists():
             try:
                 with open(self._metadata_file, "r", encoding="utf-8") as f:
@@ -183,7 +204,7 @@ class PortRomCacheManager:
             self._global_metadata = {"version": CACHE_VERSION, "roms": {}}
 
     def _save_global_metadata(self):
-        """保存全局缓存元数据"""
+        """Save global cache metadata."""
         try:
             with open(self._metadata_file, "w", encoding="utf-8") as f:
                 json.dump(self._global_metadata, f, indent=2)
@@ -192,18 +213,18 @@ class PortRomCacheManager:
 
     def _compute_rom_hash(self, rom_path: Union[str, Path]) -> str:
         """
-        计算ROM文件的哈希值
+        Compute ROM file hash.
 
-        对于大文件，使用分段哈希以提高性能：
-        - 文件头10MB
-        - 文件中间10MB
-        - 文件尾10MB
+        For large files, uses segmented hashing for performance:
+        - First 10MB
+        - Middle 10MB
+        - Last 10MB
 
         Args:
-            rom_path: ROM文件路径
+            rom_path: ROM file path
 
         Returns:
-            32字符的MD5哈希字符串
+            32-character MD5 hash string
         """
         path = Path(rom_path)
         if not path.exists():
@@ -214,54 +235,54 @@ class PortRomCacheManager:
 
         with open(path, "rb") as f:
             if file_size < 100 * 1024 * 1024:  # < 100MB
-                # 小文件：读取全部内容
+                # Small file: read all
                 hash_md5.update(f.read())
             else:
-                # 大文件：分段读取
+                # Large file: segmented read
                 chunk_size = 10 * 1024 * 1024  # 10MB
 
-                # 读取开头
+                # Read beginning
                 hash_md5.update(f.read(chunk_size))
 
-                # 读取中间
+                # Read middle
                 f.seek(file_size // 2)
                 hash_md5.update(f.read(chunk_size))
 
-                # 读取结尾
+                # Read end
                 f.seek(-chunk_size, 2)
                 hash_md5.update(f.read(chunk_size))
 
         return hash_md5.hexdigest()
 
     def _get_rom_cache_dir(self, rom_hash: str) -> Path:
-        """获取ROM缓存目录"""
+        """Get ROM cache directory."""
         return self.cache_root / rom_hash[:16]
 
     def _get_partition_cache_dir(self, rom_hash: str, partition: str) -> Path:
-        """获取分区缓存目录"""
+        """Get partition cache directory."""
         return self._get_rom_cache_dir(rom_hash) / "partitions" / partition
 
     def _get_apk_cache_dir(self, rom_hash: str) -> Path:
-        """获取APK缓存目录"""
+        """Get APK cache directory."""
         return self._get_rom_cache_dir(rom_hash) / "apks"
 
     def _get_lock_file(self, rom_hash: str) -> Path:
-        """获取锁文件路径"""
+        """Get lock file path."""
         return self._get_rom_cache_dir(rom_hash) / ".lock"
 
     def is_partition_cached(
         self, rom_path: Union[str, Path], partition: str, validate: bool = True
     ) -> bool:
         """
-        检查分区是否已缓存
+        Check if partition is cached.
 
         Args:
-            rom_path: ROM文件路径
-            partition: 分区名称 (如 "system", "product")
-            validate: 是否验证缓存完整性
+            rom_path: ROM file path
+            partition: Partition name (e.g., "system", "product")
+            validate: Whether to validate cache integrity
 
         Returns:
-            True如果缓存存在且有效
+            True if cache exists and is valid
         """
         if not self.cache_partitions:
             return False
@@ -280,17 +301,17 @@ class PortRomCacheManager:
         if not validate:
             return True
 
-        # 验证缓存元数据
+        # Validate cache metadata
         try:
             with open(metadata_file, "r", encoding="utf-8") as f:
                 metadata = CacheMetadata.from_dict(json.load(f))
 
-            # 检查版本兼容性
+            # Check version compatibility
             if metadata.version != CACHE_VERSION:
                 self.logger.debug(f"Cache version mismatch: {metadata.version} vs {CACHE_VERSION}")
                 return False
 
-            # 检查缓存目录非空
+            # Check cache directory is non-empty
             if not any(cache_dir.iterdir()):
                 return False
 
@@ -308,18 +329,19 @@ class PortRomCacheManager:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
-        存储分区到缓存
+        Store partition to cache.
 
         Args:
-            rom_path: ROM文件路径
-            partition: 分区名称
-            source_dir: 源目录路径
-            metadata: 额外元数据
+            rom_path: ROM file path
+            partition: Partition name
+            source_dir: Source directory path
+            metadata: Additional metadata
 
         Returns:
-            True如果存储成功
+            True if storage successful
         """
         if not self.cache_partitions:
+            self.logger.debug(f"Partition caching disabled, skipping cache store for {partition}")
             return False
 
         rom_hash = self._compute_rom_hash(rom_path)
@@ -328,12 +350,12 @@ class PortRomCacheManager:
 
         with FileLock(lock_file):
             try:
-                # 清理旧缓存
+                # Clean old cache
                 if cache_dir.exists():
                     shutil.rmtree(cache_dir)
                 cache_dir.mkdir(parents=True, exist_ok=True)
 
-                # 复制文件
+                # Copy files
                 source = Path(source_dir)
                 file_count = 0
                 total_size = 0
@@ -347,7 +369,7 @@ class PortRomCacheManager:
                         file_count += 1
                         total_size += item.stat().st_size
 
-                # 保存元数据
+                # Save metadata
                 cache_metadata = CacheMetadata(
                     rom_hash=rom_hash,
                     partition_name=partition,
@@ -361,7 +383,7 @@ class PortRomCacheManager:
                 with open(metadata_file, "w", encoding="utf-8") as f:
                     json.dump(cache_metadata.to_dict(), f, indent=2)
 
-                # 更新全局元数据
+                # Update global metadata
                 self._global_metadata["roms"][rom_hash] = {
                     "hash": rom_hash,
                     "cached_at": datetime.now().isoformat(),
@@ -380,7 +402,7 @@ class PortRomCacheManager:
 
             except Exception as e:
                 self.logger.error(f"Failed to cache partition {partition}: {e}")
-                # 清理失败的缓存
+                # Clean failed cache
                 if cache_dir.exists():
                     shutil.rmtree(cache_dir)
                 return False
@@ -389,15 +411,15 @@ class PortRomCacheManager:
         self, rom_path: Union[str, Path], partition: str, target_dir: Union[str, Path]
     ) -> bool:
         """
-        从缓存恢复分区
+        Restore partition from cache.
 
         Args:
-            rom_path: ROM文件路径
-            partition: 分区名称
-            target_dir: 目标目录路径
+            rom_path: ROM file path
+            partition: Partition name
+            target_dir: Target directory path
 
         Returns:
-            True如果恢复成功
+            True if restoration successful
         """
         if not self.cache_partitions:
             return False
@@ -407,12 +429,12 @@ class PortRomCacheManager:
         target = Path(target_dir)
 
         try:
-            # 清理目标目录
+            # Clean target directory
             if target.exists():
                 shutil.rmtree(target)
             target.mkdir(parents=True, exist_ok=True)
 
-            # 复制文件（排除元数据文件）
+            # Copy files (exclude metadata files)
             for item in cache_dir.rglob("*"):
                 if item.name == "cache_metadata.json":
                     continue
@@ -431,10 +453,10 @@ class PortRomCacheManager:
 
     def get_cache_info(self) -> Dict[str, Any]:
         """
-        获取缓存统计信息
+        Get cache statistics.
 
         Returns:
-            包含缓存统计的字典
+            Dictionary with cache statistics
         """
         info = {
             "version": CACHE_VERSION,
@@ -484,19 +506,19 @@ class PortRomCacheManager:
         return info
 
     def list_cached_roms(self) -> List[Dict[str, Any]]:
-        """列出所有缓存的ROM"""
+        """List all cached ROMs."""
         return self.get_cache_info().get("cached_roms", [])
 
     def clear_partition(self, rom_path: Union[str, Path], partition: str) -> bool:
         """
-        清除特定分区缓存
+        Clear specific partition cache.
 
         Args:
-            rom_path: ROM文件路径
-            partition: 分区名称
+            rom_path: ROM file path
+            partition: Partition name
 
         Returns:
-            True如果清除成功
+            True if clearance successful
         """
         try:
             rom_hash = self._compute_rom_hash(rom_path)
@@ -516,13 +538,13 @@ class PortRomCacheManager:
 
     def clear_rom(self, rom_path: Union[str, Path]) -> bool:
         """
-        清除特定ROM的所有缓存
+        Clear all cache for specific ROM.
 
         Args:
-            rom_path: ROM文件路径
+            rom_path: ROM file path
 
         Returns:
-            True如果清除成功
+            True if clearance successful
         """
         try:
             rom_hash = self._compute_rom_hash(rom_path)
@@ -533,7 +555,7 @@ class PortRomCacheManager:
                 if rom_dir.exists():
                     shutil.rmtree(rom_dir)
 
-                # 从全局元数据中移除
+                # Remove from global metadata
                 if rom_hash in self._global_metadata.get("roms", {}):
                     del self._global_metadata["roms"][rom_hash]
                     self._save_global_metadata()
@@ -547,10 +569,10 @@ class PortRomCacheManager:
 
     def clear_all(self) -> bool:
         """
-        清除所有缓存
+        Clear all cache.
 
         Returns:
-            True如果清除成功
+            True if clearance successful
         """
         try:
             for item in self.cache_root.iterdir():
@@ -571,13 +593,13 @@ class PortRomCacheManager:
 
     def verify_integrity(self, rom_path: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
         """
-        验证缓存完整性
+        Verify cache integrity.
 
         Args:
-            rom_path: 可选，指定ROM进行验证。None表示验证所有
+            rom_path: Optional, specify ROM to verify. None verifies all.
 
         Returns:
-            验证结果字典
+            Verification results dictionary
         """
         results = {
             "valid": [],
@@ -589,7 +611,7 @@ class PortRomCacheManager:
             if rom_path:
                 roms_to_check = [Path(rom_path)]
             else:
-                # 从元数据中获取所有缓存的ROM
+                # Get all cached ROMs from metadata
                 roms_to_check = [
                     self.cache_root / rom_hash[:16]
                     for rom_hash in self._global_metadata.get("roms", {}).keys()
@@ -622,10 +644,10 @@ class PortRomCacheManager:
                         with open(metadata_file, "r", encoding="utf-8") as f:
                             metadata = json.load(f)
 
-                        # 验证文件数量
+                        # Verify file count
                         actual_files = (
                             sum(1 for _ in part_dir.rglob("*") if _.is_file()) - 1
-                        )  # 排除metadata
+                        )  # Exclude metadata
                         expected_files = metadata.get("file_count", 0)
 
                         if actual_files != expected_files:
@@ -660,7 +682,7 @@ class PortRomCacheManager:
         return results
 
 
-# 便捷函数
+# Convenience functions
 def get_cache_manager(cache_root: Union[str, Path] = DEFAULT_CACHE_ROOT) -> PortRomCacheManager:
-    """获取缓存管理器实例"""
+    """Get cache manager instance."""
     return PortRomCacheManager(cache_root)

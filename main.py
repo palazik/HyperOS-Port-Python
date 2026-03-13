@@ -83,7 +83,7 @@ def parse_args():
     parser.add_argument(
         "--enable-partition-cache",
         action="store_true",
-        help="Enable partition-level caching (disabled by default, APK caching still works)",
+        help="Enable partition-level caching (disabled by default). APK caching is always enabled.",
     )
     parser.add_argument(
         "--clear-cache", action="store_true", help="Clear all cache before starting"
@@ -135,8 +135,6 @@ def main():
     if not args.no_cache and not is_official_modify:
         # Partition cache is disabled by default, use --enable-partition-cache to enable
         cache_partitions = args.enable_partition_cache
-        if cache_partitions:
-            logger.info("Partition-level caching enabled by CLI argument")
 
         cache_manager = PortRomCacheManager(args.cache_dir, cache_partitions=cache_partitions)
 
