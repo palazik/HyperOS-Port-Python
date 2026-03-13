@@ -1,111 +1,159 @@
-name: HyperOS Port Build
+name: HyperOS Port Builder
 
 on:
   workflow_dispatch:
     inputs:
-      stock_url:
-        description: 'Stock ROM Download Link'
+      stock_rom_url:
+        description: "URL to Stock ROM ZIP (Base ROM)"
         required: true
-        default: 'https://cdnorg.d.miui.com/OS3.0.5.0.WNLCNXM/duchamp-ota_full-OS3.0.5.0.WNLCNXM-user-16.0-4ec697213b.zip'
-      port_url:
-        description: 'Port ROM Download Link'
+        type: string
+      port_rom_url:
+        description: "URL to Port ROM ZIP (leave empty for Official Modification mode)"
+        required: false
+        type: string
+      device_code:
+        description: "Device codename (e.g. fuxi, mayfly)"
         required: true
-        default: 'https://cdnorg.d.miui.com/OS3.0.300.4.WONCNXM/dali-ota_full-OS3.0.300.4.WONCNXM-user-16.0-86f34cc79f.zip'
+        type: string
       pack_type:
-        description: 'Output format (super/payload)'
-        required: true
-        default: 'super'
-      gms_phonesky_url:
-        description: 'Phonesky ZIP Download Link (Optional)'
+        description: "Output format"
         required: false
-        default: 'https://github.com/handingslider/HyperOS-Port-Python/releases/download/v1/phonesky.zip'
-      gms_velvet_url:
-        description: 'Velvet ZIP Download Link (Optional)'
+        default: "payload"
+        type: choice
+        options:
+          - payload
+          - super
+      fs_type:
+        description: "Filesystem type"
         required: false
-        default: 'https://github.com/handingslider/HyperOS-Port-Python/releases/download/v1/velvet.zip'
-      latin_ime_url:
-        description: 'LatinImeGoogle ZIP Download Link (Optional)'
+        default: "erofs"
+        type: choice
+        options:
+          - erofs
+          - ext4
+      enable_ksu:
+        description: "Inject KernelSU"
         required: false
-        default: 'https://github.com/handingslider/HyperOS-Port-Python/releases/download/v1/LatinImeGoogle.zip'
-      via_browser_url:
-        description: 'Via Browser ZIP Download Link (Optional)'
+        default: false
+        type: boolean
+      eu_bundle_url:
+        description: "URL to EU Localization Bundle ZIP (optional)"
         required: false
-        default: 'https://github.com/handingslider/HyperOS-Port-Python/releases/download/v1/Via.zip'
+        type: string
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
+    name: Build HyperOS Port
+    runs-on: ubuntu-22.04
 
-      - name: Checkout Code
+    steps:
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
+          cache: "pip"
 
-      - name: Set up JDK
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'zulu'
-          java-version: '17'
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            git curl wget unzip zip \
+            android-sdk-libsparse-utils \
+            brotli lz4 \
+            libssl-dev \
+            erofs-utils \
+            zipalign
 
-      - name: Install Dependencies
+      - name: Install Python dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y zstd aria2
-          pip install -r requirements.txt || pip install requests glob2
-      - name: Prepare Binaries
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download Stock ROM
         run: |
-          chmod +x bin/linux/x86_64/*
-      - name: Download ROMs
-        run: |
-          mkdir -p downloads
           echo "Downloading Stock ROM..."
-          aria2c -x 16 -s 16 -d downloads -o stock.zip "${{ github.event.inputs.stock_url }}"
+          wget -q --show-progress -O stock_rom.zip "${{ github.event.inputs.stock_rom_url }}"
+          echo "STOCK_ROM_PATH=$(pwd)/stock_rom.zip" >> $GITHUB_ENV
+
+      - name: Download Port ROM
+        if: ${{ github.event.inputs.port_rom_url != '' }}
+        run: |
           echo "Downloading Port ROM..."
-          aria2c -x 16 -s 16 -d downloads -o port.zip "${{ github.event.inputs.port_url }}"
-      - name: Download GMS (Optional)
+          wget -q --show-progress -O port_rom.zip "${{ github.event.inputs.port_rom_url }}"
+          echo "PORT_ROM_PATH=$(pwd)/port_rom.zip" >> $GITHUB_ENV
+
+      - name: Download EU Bundle
+        if: ${{ github.event.inputs.eu_bundle_url != '' }}
         run: |
-          mkdir -p gapps
-          if [ -n "${{ github.event.inputs.gms_phonesky_url }}" ]; then
-            echo "Downloading Phonesky ZIP..."
-            aria2c -x 16 -s 16 -d gapps -o phonesky.zip "${{ github.event.inputs.gms_phonesky_url }}"
-          fi
-          if [ -n "${{ github.event.inputs.gms_velvet_url }}" ]; then
-            echo "Downloading Velvet ZIP..."
-            aria2c -x 16 -s 16 -d gapps -o velvet.zip "${{ github.event.inputs.gms_velvet_url }}"
-          fi
-          if [ -n "${{ github.event.inputs.latin_ime_url }}" ]; then
-            echo "Downloading LatinImeGoogle ZIP..."
-            aria2c -x 16 -s 16 -d gapps -o LatinImeGoogle.zip "${{ github.event.inputs.latin_ime_url }}"
-          fi
-          if [ -n "${{ github.event.inputs.via_browser_url }}" ]; then
-            echo "Downloading Via Browser ZIP..."
-            aria2c -x 16 -s 16 -d gapps -o Via.zip "${{ github.event.inputs.via_browser_url }}"
-          fi
-      - name: Run Porting Tool
+          echo "Downloading EU Bundle..."
+          wget -q --show-progress -O eu_bundle.zip "${{ github.event.inputs.eu_bundle_url }}"
+          echo "EU_BUNDLE_PATH=$(pwd)/eu_bundle.zip" >> $GITHUB_ENV
+
+      - name: Build port arguments
+        id: build_args
         run: |
-          python3 main.py --stock downloads/stock.zip \
-                          --port downloads/port.zip \
-                          --pack-type "${{ github.event.inputs.pack_type }}" \
-                          --clean
-      - name: Upload Results
+          ARGS="--stock ${{ env.STOCK_ROM_PATH }}"
+          ARGS="$ARGS --pack-type ${{ github.event.inputs.pack_type }}"
+          ARGS="$ARGS --fs-type ${{ github.event.inputs.fs_type }}"
+          ARGS="$ARGS --work-dir build"
+          ARGS="$ARGS --clean"
+
+          if [ -n "${{ env.PORT_ROM_PATH }}" ]; then
+            ARGS="$ARGS --port ${{ env.PORT_ROM_PATH }}"
+          fi
+
+          if [ "${{ github.event.inputs.enable_ksu }}" = "true" ]; then
+            ARGS="$ARGS --ksu"
+          fi
+
+          if [ -n "${{ env.EU_BUNDLE_PATH }}" ]; then
+            ARGS="$ARGS --eu-bundle ${{ env.EU_BUNDLE_PATH }}"
+          fi
+
+          echo "ARGS=$ARGS" >> $GITHUB_OUTPUT
+
+      - name: Run HyperOS Port
+        run: |
+          sudo python3 main.py ${{ steps.build_args.outputs.ARGS }}
+
+      - name: Find output ROM
+        id: find_output
+        run: |
+          OUTPUT=$(find out/ -name "*.zip" | head -1)
+          if [ -z "$OUTPUT" ]; then
+            echo "ERROR: No output ROM found in out/"
+            exit 1
+          fi
+          echo "OUTPUT_FILE=$OUTPUT" >> $GITHUB_OUTPUT
+          echo "OUTPUT_NAME=$(basename $OUTPUT)" >> $GITHUB_OUTPUT
+          echo "Found output: $OUTPUT"
+
+      - name: Upload ROM artifact
         uses: actions/upload-artifact@v4
         with:
-          name: HyperOS-Port-${{ github.run_id }}
-          path: |
-            out/*_hybrid/
-          compression-level: 9
+          name: HyperOS-Port-${{ github.event.inputs.device_code }}-${{ github.run_number }}
+          path: ${{ steps.find_output.outputs.OUTPUT_FILE }}
+          retention-days: 7
+          compression-level: 0
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: port-${{ github.event.inputs.device_code }}-${{ github.run_number }}
+          name: "HyperOS Port [${{ github.event.inputs.device_code }}] #${{ github.run_number }}"
+          body: |
+            ## Build Info
+            - **Device**: `${{ github.event.inputs.device_code }}`
+            - **Pack type**: `${{ github.event.inputs.pack_type }}`
+            - **Filesystem**: `${{ github.event.inputs.fs_type }}`
+            - **KernelSU**: `${{ github.event.inputs.enable_ksu }}`
+            - **Mode**: ${{ github.event.inputs.port_rom_url != '' && 'Port mode' || 'Official Modification mode' }}
+            - **Built on**: ${{ github.run_number }}
+          files: ${{ steps.find_output.outputs.OUTPUT_FILE }}
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
