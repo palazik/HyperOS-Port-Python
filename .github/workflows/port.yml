@@ -44,23 +44,26 @@ on:
 jobs:
   build:
     name: Build HyperOS Port
-    runs-on: ubuntu-22.04
+    # ubuntu-24.04 ships glibc 2.39, required by the bundled payload-dumper binary
+    # ubuntu-22.04 only has glibc 2.35 → "GLIBC_2.38 not found" crash
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache: "pip"
 
       - name: Install system dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y \
-            git curl wget unzip zip \
+            aria2 \
+            unzip zip \
             android-sdk-libsparse-utils \
             brotli lz4 \
             libssl-dev \
@@ -72,24 +75,37 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # aria2c: 16 parallel connections — much faster than single-threaded wget
       - name: Download Stock ROM
         run: |
-          echo "Downloading Stock ROM..."
-          wget -q --show-progress -O stock_rom.zip "${{ github.event.inputs.stock_rom_url }}"
+          aria2c \
+            --split=16 \
+            --max-connection-per-server=16 \
+            --min-split-size=10M \
+            --out=stock_rom.zip \
+            "${{ github.event.inputs.stock_rom_url }}"
           echo "STOCK_ROM_PATH=$(pwd)/stock_rom.zip" >> $GITHUB_ENV
 
       - name: Download Port ROM
         if: ${{ github.event.inputs.port_rom_url != '' }}
         run: |
-          echo "Downloading Port ROM..."
-          wget -q --show-progress -O port_rom.zip "${{ github.event.inputs.port_rom_url }}"
+          aria2c \
+            --split=16 \
+            --max-connection-per-server=16 \
+            --min-split-size=10M \
+            --out=port_rom.zip \
+            "${{ github.event.inputs.port_rom_url }}"
           echo "PORT_ROM_PATH=$(pwd)/port_rom.zip" >> $GITHUB_ENV
 
       - name: Download EU Bundle
         if: ${{ github.event.inputs.eu_bundle_url != '' }}
         run: |
-          echo "Downloading EU Bundle..."
-          wget -q --show-progress -O eu_bundle.zip "${{ github.event.inputs.eu_bundle_url }}"
+          aria2c \
+            --split=16 \
+            --max-connection-per-server=16 \
+            --min-split-size=10M \
+            --out=eu_bundle.zip \
+            "${{ github.event.inputs.eu_bundle_url }}"
           echo "EU_BUNDLE_PATH=$(pwd)/eu_bundle.zip" >> $GITHUB_ENV
 
       - name: Build port arguments
