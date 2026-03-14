@@ -60,7 +60,7 @@ A powerful, automated Python-based tool for porting HyperOS ROMs across Xiaomi/R
 
 ### 1. Installation
 ```bash
-git clone https://github.com/yourusername/HyperOS-Port-Python.git
+git clone https://github.com/palazik/HyperOS-Port-Python.git
 cd HyperOS-Port-Python
 # Install dependencies
 pip install -r requirements.txt
