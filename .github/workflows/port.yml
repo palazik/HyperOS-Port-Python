@@ -44,13 +44,21 @@ on:
 jobs:
   build:
     name: Build HyperOS Port
-    # ubuntu-24.04 ships glibc 2.39, required by the bundled payload-dumper binary
+    # ubuntu-24.04 ships glibc 2.39, required by the bundled otatools binaries
     # ubuntu-22.04 only has glibc 2.35 → "GLIBC_2.38 not found" crash
     runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # Cache otatools so they aren't re-downloaded on every run
+      # OtaToolsManager always pulls from toraidl/releases/assets/otatools.zip
+      - name: Cache otatools
+        uses: actions/cache@v4
+        with:
+          path: otatools
+          key: otatools-toraidl-assets
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -167,7 +175,7 @@ jobs:
             - **Filesystem**: `${{ github.event.inputs.fs_type }}`
             - **KernelSU**: `${{ github.event.inputs.enable_ksu }}`
             - **Mode**: ${{ github.event.inputs.port_rom_url != '' && 'Port mode' || 'Official Modification mode' }}
-            - **Built on**: ${{ github.run_number }}
+            - **Run**: #${{ github.run_number }}
           files: ${{ steps.find_output.outputs.OUTPUT_FILE }}
           draft: false
           prerelease: true
