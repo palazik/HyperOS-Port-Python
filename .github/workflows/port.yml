@@ -40,6 +40,15 @@ on:
         description: "URL to EU Localization Bundle ZIP (optional)"
         required: false
         type: string
+      upload_target:
+        description: "Upload destination"
+        required: false
+        default: "artifact"
+        type: choice
+        options:
+          - artifact
+          - pixeldrain
+          - gdrive
 
 jobs:
   build:
@@ -170,10 +179,106 @@ jobs:
           echo "OUTPUT_NAME=$(basename $OUTPUT)" >> $GITHUB_OUTPUT
           echo "Found output: $OUTPUT"
 
-      - name: Upload ROM artifact
+      # ── Artifact (default) ──────────────────────────────────────────────────
+      - name: Upload as Artifact
+        if: github.event.inputs.upload_target == 'artifact'
         uses: actions/upload-artifact@v4
         with:
-          name: HyperOS-Port-${{ github.event.inputs.device_code }}-${{ github.run_number }}
+          name: ${{ steps.find_output.outputs.OUTPUT_NAME }}
           path: ${{ steps.find_output.outputs.OUTPUT_FILE }}
           retention-days: 7
           compression-level: 0
+
+      # ── Pixeldrain ──────────────────────────────────────────────────────────
+      # Requires secret: PIXELDRAIN_API_KEY
+      # Get it at: https://pixeldrain.com/user/api
+      - name: Upload to Pixeldrain
+        if: github.event.inputs.upload_target == 'pixeldrain'
+        run: |
+          FILENAME="${{ steps.find_output.outputs.OUTPUT_NAME }}"
+          FILEPATH="${{ steps.find_output.outputs.OUTPUT_FILE }}"
+
+          echo "Uploading $FILENAME to Pixeldrain..."
+          RESPONSE=$(curl -s -T "$FILEPATH" \
+            -u ":${{ secrets.PIXELDRAIN_API_KEY }}" \
+            "https://pixeldrain.com/api/file/$FILENAME")
+
+          FILE_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+
+          if [ -z "$FILE_ID" ]; then
+            echo "Upload failed: $RESPONSE"
+            exit 1
+          fi
+
+          echo "✅ Upload successful!"
+          echo "📥 Download: https://pixeldrain.com/u/$FILE_ID"
+          echo "PIXELDRAIN_URL=https://pixeldrain.com/u/$FILE_ID" >> $GITHUB_ENV
+
+      - name: Print Pixeldrain link
+        if: github.event.inputs.upload_target == 'pixeldrain'
+        run: |
+          echo "### 📥 Download Link" >> $GITHUB_STEP_SUMMARY
+          echo "**Pixeldrain:** ${{ env.PIXELDRAIN_URL }}" >> $GITHUB_STEP_SUMMARY
+
+      # ── Google Drive ────────────────────────────────────────────────────────
+      # Requires secrets: GDRIVE_CREDENTIALS_JSON, GDRIVE_FOLDER_ID
+      # GDRIVE_CREDENTIALS_JSON — Service Account JSON key (base64 encoded)
+      # GDRIVE_FOLDER_ID — ID of the target Google Drive folder
+      - name: Upload to Google Drive
+        if: github.event.inputs.upload_target == 'gdrive'
+        run: |
+          pip install -q google-auth google-auth-httplib2 google-api-python-client
+
+          echo "${{ secrets.GDRIVE_CREDENTIALS_JSON }}" | base64 -d > /tmp/gdrive_creds.json
+
+          python3 << 'EOF'
+          import os
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+          from google.oauth2 import service_account
+
+          creds = service_account.Credentials.from_service_account_file(
+              '/tmp/gdrive_creds.json',
+              scopes=['https://www.googleapis.com/auth/drive']
+          )
+          service = build('drive', 'v3', credentials=creds)
+
+          filepath = os.environ['OUTPUT_FILE']
+          filename = os.environ['OUTPUT_NAME']
+          folder_id = os.environ['GDRIVE_FOLDER_ID']
+
+          file_metadata = {'name': filename, 'parents': [folder_id]}
+          media = MediaFileUpload(filepath, resumable=True, chunksize=100*1024*1024)
+
+          print(f"Uploading {filename} to Google Drive...")
+          file = service.files().create(
+              body=file_metadata,
+              media_body=media,
+              fields='id,webViewLink'
+          ).execute()
+
+          link = file.get('webViewLink')
+          file_id = file.get('id')
+
+          # Make file publicly readable
+          service.permissions().create(
+              fileId=file_id,
+              body={'type': 'anyone', 'role': 'reader'}
+          ).execute()
+
+          print(f"✅ Upload successful!")
+          print(f"📥 Link: https://drive.google.com/uc?id={file_id}&export=download")
+
+          with open(os.environ['GITHUB_ENV'], 'a') as f:
+              f.write(f"GDRIVE_URL=https://drive.google.com/uc?id={file_id}&export=download\n")
+          EOF
+        env:
+          OUTPUT_FILE: ${{ steps.find_output.outputs.OUTPUT_FILE }}
+          OUTPUT_NAME: ${{ steps.find_output.outputs.OUTPUT_NAME }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+
+      - name: Print Google Drive link
+        if: github.event.inputs.upload_target == 'gdrive'
+        run: |
+          echo "### 📥 Download Link" >> $GITHUB_STEP_SUMMARY
+          echo "**Google Drive:** ${{ env.GDRIVE_URL }}" >> $GITHUB_STEP_SUMMARY
