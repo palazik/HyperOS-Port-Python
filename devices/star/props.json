@@ -1,0 +1,7 @@
+{
+    "product": {
+        "persist.miui.subscreen.density_v2": "240",
+        "persist.sys.subscreen_function": "1",
+        "persist.sys.muiltdisplay_type": "1"
+    }
+}
