@@ -177,22 +177,3 @@ jobs:
           path: ${{ steps.find_output.outputs.OUTPUT_FILE }}
           retention-days: 7
           compression-level: 0
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: port-${{ github.event.inputs.device_code }}-${{ github.run_number }}
-          name: "HyperOS Port [${{ github.event.inputs.device_code }}] #${{ github.run_number }}"
-          body: |
-            ## Build Info
-            - **Device**: `${{ github.event.inputs.device_code }}`
-            - **Pack type**: `${{ github.event.inputs.pack_type }}`
-            - **Filesystem**: `${{ github.event.inputs.fs_type }}`
-            - **KernelSU**: `${{ github.event.inputs.enable_ksu }}`
-            - **Mode**: ${{ github.event.inputs.port_rom_url != '' && 'Port mode' || 'Official Modification mode' }}
-            - **Run**: #${{ github.run_number }}
-          files: ${{ steps.find_output.outputs.OUTPUT_FILE }}
-          draft: false
-          prerelease: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
