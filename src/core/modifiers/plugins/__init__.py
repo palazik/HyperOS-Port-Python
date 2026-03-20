@@ -8,6 +8,7 @@ from src.core.modifiers.plugins.eu_localization import EULocalizationPlugin
 from src.core.modifiers.plugins.feature_unlock import FeatureUnlockPlugin
 from src.core.modifiers.plugins.vndk_fix import VNDKFixPlugin
 from src.core.modifiers.plugins.file_replacement import FileReplacementPlugin
+from src.core.modifiers.plugins.voice_trigger_fix import VoiceTriggerFixPlugin
 
 __all__ = [
     "WildBoostPlugin",
@@ -15,4 +16,5 @@ __all__ = [
     "FeatureUnlockPlugin",
     "VNDKFixPlugin",
     "FileReplacementPlugin",
+    "VoiceTriggerFixPlugin",
 ]
