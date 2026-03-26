@@ -1,17 +1,43 @@
 import concurrent.futures
 import hashlib
-import os
-import math
 import logging
+import os
 import shutil
 import subprocess
 import zipfile
-from pathlib import Path
-from typing import List, Optional, Dict, Union, Any, Tuple
-from src.utils.shell import ShellRunner
-from src.utils.fspatch import patch_fs_config
-from src.utils.contextpatch import ContextPatcher
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, cast
+
+from src.utils.contextpatch import ContextPatcher
+from src.utils.fspatch import patch_fs_config
+from src.utils.shell import ShellRunner
+
+
+def build_rom_filename_prefix(ctx: Any) -> str:
+    """Build output filename prefix based on ROM type."""
+    if getattr(ctx, "is_port_eu_rom", False):
+        return "xiaomi.eu_"
+    return ""
+
+
+def build_rom_filename_device_tag(ctx: Any) -> str:
+    """Build the device segment used in output filenames."""
+    device = str(getattr(ctx, "stock_rom_code", "") or "").strip()
+    if not device:
+        return "unknown"
+
+    if getattr(ctx, "is_port_eu_rom", False):
+        return device
+
+    region = str(getattr(ctx, "port_global_region", "") or "").lower().strip()
+    if region and region != "global":
+        return f"{device}_{region}_global"
+
+    if getattr(ctx, "is_port_global_rom", False):
+        return f"{device}_global"
+
+    return device
 
 
 class Repacker:
@@ -437,7 +463,7 @@ class Repacker:
         final_zip_path: Path = self.out_dir / final_zip_name
 
         with zipfile.ZipFile(final_zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for root, dirs, files in os.walk(out_path):
+            for root, _dirs, files in os.walk(out_path):
                 for file in files:
                     file_path = Path(root) / file
                     arcname = file_path.relative_to(out_path)
@@ -447,8 +473,9 @@ class Repacker:
                         zf.write(file_path, arcname)
 
         md5: str = hashlib.md5(open(final_zip_path, "rb").read()).hexdigest()[:10]
-        prefix = "xiaomi.eu_" if getattr(self.ctx, "is_port_eu_rom", False) else ""
-        renamed_zip_name: str = f"{prefix}{self.ctx.stock_rom_code}_Hybrid_{self.ctx.target_rom_version}_{self.ctx.security_patch}_{md5}_{timestamp}.zip"
+        prefix = build_rom_filename_prefix(self.ctx)
+        device_tag = build_rom_filename_device_tag(self.ctx)
+        renamed_zip_name: str = f"{prefix}{device_tag}_Hybrid_{self.ctx.target_rom_version}_{self.ctx.security_patch}_{md5}_{timestamp}.zip"
         renamed_zip_path: Path = self.out_dir / renamed_zip_name
         final_zip_path.rename(renamed_zip_path)
         self.logger.info(f"Hybrid ROM generated: {renamed_zip_path}")
@@ -586,6 +613,91 @@ class Repacker:
             new_content = parts[0] + marker + "\n" + "\n".join(insertion) + parts[1]
             script_path.write_text(new_content, encoding="utf-8")
 
+    def _get_partition_list(self) -> List[str]:
+        """Get list of logical partitions to pack.
+
+        Priority:
+        1. Device config pack.partitions
+        2. partition_info.json (auto-generated)
+        3. Default list
+        """
+        # Check device config first
+        config_partitions = self.ctx.device_config.get("pack", {}).get("partitions")
+        if config_partitions:
+            self.logger.info(f"Using partitions from device config: {config_partitions}")
+            return cast(List[str], config_partitions)
+
+        # Check for auto-generated partition_info.json
+        partition_info_path = Path(f"devices/{self.ctx.stock_rom_code}/partition_info.json")
+        if partition_info_path.exists():
+            try:
+                import json
+
+                with open(partition_info_path, "r") as f:
+                    info = json.load(f)
+                partitions = info.get("dynamic_partitions", [])
+                if partitions:
+                    self.logger.info(f"Using partitions from partition_info.json: {partitions}")
+                    return cast(List[str], partitions)
+            except Exception as e:
+                self.logger.warning(f"Failed to read partition_info.json: {e}")
+
+        # Fall back to default list
+        default_partitions = [
+            "system",
+            "system_ext",
+            "product",
+            "vendor",
+            "odm",
+            "mi_ext",
+            "system_dlkm",
+            "vendor_dlkm",
+        ]
+        self.logger.info(f"Using default partition list: {default_partitions}")
+        return default_partitions
+
+    def _get_super_size(self) -> int:
+        """Get Super partition size."""
+        # 1. Check from device config first
+        if hasattr(self.ctx, "device_config"):
+            super_size = self.ctx.device_config.get("pack", {}).get("super_size")
+            if super_size:
+                self.logger.info(f"Using super_size from device config: {super_size}")
+                return int(super_size)
+
+        # 2. Check from partition_info.json
+        partition_info_path = Path(f"devices/{self.ctx.stock_rom_code}/partition_info.json")
+        if partition_info_path.exists():
+            try:
+                import json
+
+                with open(partition_info_path, "r") as f:
+                    info = json.load(f)
+                super_size = info.get("super_size")
+                if super_size:
+                    self.logger.info(f"Using super_size from partition_info.json: {super_size}")
+                    return int(super_size)
+            except Exception as e:
+                self.logger.debug(f"Failed to read super_size from partition_info.json: {e}")
+
+        # 3. Fallback to hardcoded map
+        device_code: str = self.ctx.stock_rom_code.upper()
+        size_map: Dict[int, List[str]] = {
+            9663676416: ["FUXI", "NUWA", "ISHTAR", "MARBLE", "SOCRATES", "BABYLON"],
+            9122611200: ["SUNSTONE"],
+            11811160064: ["YUDI"],
+            13411287040: ["PANDORA", "POPSICLE", "PUDDING", "NEZHA"],
+        }
+        for size, devices in size_map.items():
+            if device_code in devices:
+                self.logger.info(f"Using super_size from built-in map for {device_code}: {size}")
+                return size
+        default_size = 9126805504
+        self.logger.info(
+            f"Using default super_size fallback for {device_code}: {default_size}"
+        )
+        return default_size
+
     def pack_ota_payload(self) -> None:
         """Pack AOSP OTA payload"""
         self.logger.info("Starting OTA Payload packing...")
@@ -593,9 +705,15 @@ class Repacker:
             shutil.rmtree(self.product_out)
         self.images_out.mkdir(parents=True, exist_ok=True)
         self.meta_out.mkdir(parents=True, exist_ok=True)
-        for part in ["SYSTEM", "SYSTEM_EXT", "PRODUCT", "VENDOR", "ODM", "MI_EXT"]:
-            (self.product_out / part).mkdir(exist_ok=True)
 
+        # Get partition list from config or auto-detect
+        pack_partitions = self._get_partition_list()
+
+        # Create directories for all partitions
+        for part in pack_partitions:
+            (self.product_out / part.upper()).mkdir(exist_ok=True)
+
+        # Copy all partition images
         for img in self.ctx.target_dir.glob("*.img"):
             shutil.copy2(img, self.images_out)
         if self.ctx.repack_images_dir.exists():
@@ -633,6 +751,11 @@ class Repacker:
                 f.write(f"{p}\n")
 
         super_size: int = self._get_super_size()
+        self.logger.info(
+            "Current packing super_size: %d bytes (%.2f GiB)",
+            super_size,
+            super_size / (1024**3),
+        )
         group_size: int = super_size - 1048576
         super_parts: List[str] = [
             p
@@ -706,33 +829,13 @@ class Repacker:
                 env=env,
             )
             md5: str = hashlib.md5(open(output_zip, "rb").read()).hexdigest()[:10]
-            prefix = "xiaomi.eu_" if getattr(self.ctx, "is_port_eu_rom", False) else ""
+            prefix = build_rom_filename_prefix(self.ctx)
+            device_tag = build_rom_filename_device_tag(self.ctx)
             final_path: Path = (
                 self.out_dir
-                / f"{prefix}{self.ctx.stock_rom_code}-ota_full-{self.ctx.target_rom_version}-{self.ctx.security_patch}-{timestamp}-{md5}-{self.ctx.port_android_version}.zip"
+                / f"{prefix}{device_tag}-ota_full-{self.ctx.target_rom_version}-{self.ctx.security_patch}-{timestamp}-{md5}-{self.ctx.port_android_version}.zip"
             )
             output_zip.rename(final_path)
             self.logger.info(f"Final OTA Package: {final_path}")
         except (subprocess.CalledProcessError, OSError) as e:
             self.logger.error(f"OTA generation failed: {e}")
-
-    def _get_super_size(self) -> int:
-        """Get Super partition size"""
-        # 1. Check from device config first
-        if hasattr(self.ctx, "device_config"):
-            super_size = self.ctx.device_config.get("pack", {}).get("super_size")
-            if super_size:
-                return int(super_size)
-
-        # 2. Fallback to hardcoded map
-        device_code: str = self.ctx.stock_rom_code.upper()
-        size_map: Dict[int, List[str]] = {
-            9663676416: ["FUXI", "NUWA", "ISHTAR", "MARBLE", "SOCRATES", "BABYLON"],
-            9122611200: ["SUNSTONE"],
-            11811160064: ["YUDI"],
-            13411287040: ["PUDDING", "NEZHA"],
-        }
-        for size, devices in size_map.items():
-            if device_code in devices:
-                return size
-        return 9126805504

@@ -4,18 +4,16 @@ This module provides a flexible plugin architecture for ROM modifications.
 Plugins can be registered dynamically and executed in a specific order.
 """
 
-from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Type, Callable
-from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import logging
-import threading
-
-from src.core.modifiers.transaction import TransactionManager, Transaction
-
-
 import io
+import logging
 import subprocess
+import threading
+from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Type
+
+from src.core.modifiers.transaction import TransactionManager
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +112,20 @@ class ModifierPlugin(ABC):
             bool: True if can proceed, False to skip
         """
         return True
+
+    def check_prerequisites_with_reason(self) -> tuple[bool, str]:
+        """Check prerequisites and return a human-readable reason.
+
+        Returns:
+            Tuple of (passed, reason).
+        """
+        try:
+            passed = bool(self.check_prerequisites())
+        except Exception as exc:  # pragma: no cover - defensive wrapper
+            return False, f"check_prerequisites raised: {exc}"
+        if passed:
+            return True, "ok"
+        return False, "check_prerequisites returned False"
 
     def get_config(self, key: str, default: Any = None) -> Any:
         """Get configuration value from device config."""
@@ -267,6 +279,14 @@ class PluginManager:
         """Get a registered plugin by name."""
         return self._plugins.get(name)
 
+    def has_plugin(self, name: str) -> bool:
+        """Return whether a plugin with the given name is registered."""
+        return name in self._plugins
+
+    def list_plugin_names(self) -> List[str]:
+        """Return registered plugin names in registration order."""
+        return list(self._plugins)
+
     def list_plugins(self) -> List[ModifierPlugin]:
         """Get list of all registered plugins."""
         return list(self._plugins.values())
@@ -284,7 +304,7 @@ class PluginManager:
         plugins = [p for p in self._plugins.values() if p.enabled]
 
         # Build dependency graph
-        resolved = []
+        resolved: List[ModifierPlugin] = []
         unresolved = set(p.name for p in plugins)
 
         while unresolved:
@@ -382,8 +402,11 @@ class PluginManager:
                     self.logger.warning(f"Pre-modify hook failed: {e}")
 
             # Check prerequisites
-            if not plugin.check_prerequisites():
-                self.logger.info(f"Skipping plugin {plugin.name}: prerequisites not met")
+            prerequisites_ok, prereq_reason = plugin.check_prerequisites_with_reason()
+            if not prerequisites_ok:
+                self.logger.info(
+                    f"Skipping plugin {plugin.name}: prerequisites not met ({prereq_reason})"
+                )
                 return None
 
             # Check version compatibility
@@ -401,7 +424,7 @@ class PluginManager:
             # Execute plugin with optional timeout
             try:
                 if self._transaction_manager:
-                    with self._transaction_manager.transaction(plugin.name) as txn:
+                    with self._transaction_manager.transaction(plugin.name):
                         timeout = plugin.timeout
                         if timeout:
                             success: Optional[bool] = self._execute_with_timeout(plugin, timeout)
@@ -479,7 +502,7 @@ class PluginManager:
 
         return bool(result[0])
 
-    def execute(self, plugin_names: Optional[List[str]] = None) -> Dict[str, bool]:
+    def execute(self, plugin_names: Optional[List[str]] = None) -> Dict[str, bool | None]:
         """Execute all or specific plugins.
 
         Supports parallel execution of same-priority plugins.
@@ -488,9 +511,9 @@ class PluginManager:
             plugin_names: Optional list of specific plugins to run
 
         Returns:
-            Dict mapping plugin names to success status
+            Dict mapping plugin names to success status, with None for skipped plugins
         """
-        results = {}
+        results: Dict[str, bool | None] = {}
 
         # Get sorted plugins
         if plugin_names:
@@ -521,7 +544,6 @@ class PluginManager:
                 # Collect buffered logs and results
                 plugin_logs: Dict[str, str] = {}
                 plugin_errors: Dict[str, Exception] = {}
-                plugin_results: Dict[str, Any] = {}
 
                 def execute_with_log_capture(plugin):
                     """Execute plugin with full checks and capture logs."""
@@ -533,8 +555,9 @@ class PluginManager:
 
                     try:
                         # Run prerequisite checks
-                        if not plugin.check_prerequisites():
-                            return (None, buffer_handler, "prerequisites")
+                        prerequisites_ok, prereq_reason = plugin.check_prerequisites_with_reason()
+                        if not prerequisites_ok:
+                            return (None, buffer_handler, f"prerequisites:{prereq_reason}")
 
                         # Version compatibility check
                         if not self._check_version_compatibility(plugin):
@@ -563,9 +586,10 @@ class PluginManager:
                         try:
                             result, buffer_handler, skip_reason = future.result()
 
-                            if skip_reason == "prerequisites":
+                            if skip_reason and skip_reason.startswith("prerequisites:"):
+                                reason = skip_reason.split(":", 1)[1]
                                 self.logger.info(
-                                    f"Plugin {plugin.name}: prerequisites not met, skipped"
+                                    f"Plugin {plugin.name}: prerequisites not met ({reason}), skipped"
                                 )
                                 results[plugin.name] = None
                             elif skip_reason == "version":
@@ -578,7 +602,7 @@ class PluginManager:
                                 results[plugin.name] = False
                                 self.logger.error(f"Plugin {plugin.name} failed: {result}")
                             else:
-                                results[plugin.name] = result
+                                results[plugin.name] = bool(result)
                                 # Capture buffered logs
                                 if buffer_handler:
                                     plugin_logs[plugin.name] = buffer_handler.buffer.getvalue()
@@ -812,12 +836,6 @@ def load_plugins_from_config(config: Dict[str, Any], manager: PluginManager) -> 
     Returns:
         PluginManager for chaining
     """
-    import json
-
-    if isinstance(config, str):
-        with open(config, "r") as f:
-            config = json.load(f)
-
     plugins_config = config.get("plugins", [])
 
     for plugin_config in plugins_config:
