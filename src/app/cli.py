@@ -41,6 +41,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Filesystem type for repacking. Default: from config or 'erofs'",
     )
+    parser.add_argument(
+        "--custom-avb-chain",
+        action="store_true",
+        help="Enable custom AVB chain generation (re-sign images, rebuild vbmeta, verify chain)",
+    )
+    parser.add_argument(
+        "--avb-key",
+        type=Path,
+        help="Path to custom AVB signing key (PEM format). Generate with: openssl genrsa -out key.pem 4096",
+    )
+    parser.add_argument(
+        "--resume-from-packer",
+        action="store_true",
+        help="Resume from existing target workspace and run repacking only",
+    )
     parser.add_argument("--eu-bundle", help="Path/URL to EU Localization Bundle zip")
     parser.add_argument(
         "--preflight-only",
